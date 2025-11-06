@@ -1,0 +1,38 @@
+{
+  "loops": [
+    {
+      "enabled": false,
+      "kind": "digital",
+      "ai_ch": 0,
+      "out_ch": 1,
+      "target": 25.0,
+      "kp": 0.1,
+      "ki": 0.01,
+      "kd": 0.5,
+      "out_min": null,
+      "out_max": null,
+      "err_min": -0.15,
+      "err_max": 0.15,
+      "i_min": -0.05,
+      "i_max": 0.05,
+      "src": "ai"
+    },
+    {
+      "enabled": false,
+      "kind": "digital",
+      "ai_ch": 1,
+      "out_ch": 0,
+      "target": 50.0,
+      "kp": 0.24999999999999375,
+      "ki": 3.469446951953614e-18,
+      "kd": 8.999999999999986,
+      "out_min": null,
+      "out_max": null,
+      "err_min": -0.9999999999999999,
+      "err_max": 0.9999999999999999,
+      "i_min": -0.5,
+      "i_max": 0.5,
+      "src": "ai"
+    }
+  ]
+}

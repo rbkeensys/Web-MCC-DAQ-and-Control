@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <title>MCC Web Control</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="left">
+      <button id="connectBtn">Connect</button>
+      <label>Rate Hz <input id="rate" type="number" min="1" step="1" value="100"></label>
+      <button id="setRate">Set</button>
+      <span id="session"></span>
+    </div>
+    <div class="right">
+      <span id="versions" style="opacity:.7;margin-right:8px"></span>
+      <button id="editConfig">Config.json</button>
+      <button id="editPID">PID.json</button>
+      <button id="editScript">Script.json</button>
+      <button id="recall">Recall Logs</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="palette">
+      <h3>Widgets</h3>
+      <button data-add="chart">Chart</button>
+      <button data-add="gauge">Gauge</button>
+      <button data-add="bars">Bars</button>
+      <button data-add="dobutton">DO Button</button>
+      <button data-add="pidpanel">PID Panel</button>
+      <h3>Pages</h3>
+      <div id="pages"></div>
+      <button id="addPage">+ Page</button>
+    </aside>
+    <section class="canvas" id="canvas"></section>
+  </main>
+
+  <!-- Modals -->
+  <div id="modal" class="modal hidden"></div>
+
+  <script src="/app.js?v=0.3.1" defer></script>
+</body>
+</html>

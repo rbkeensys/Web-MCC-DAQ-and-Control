@@ -1,0 +1,184 @@
+{
+  "board1608": {
+    "boardNum": 0,
+    "sampleRateHz": 100.0,
+    "blockSize": 128,
+    "aiMode": "SE"
+  },
+  "boardetc": {
+    "boardNum": 1,
+    "sampleRateHz": 100.0,
+    "blockSize": 128
+  },
+  "analogs": [
+    {
+      "name": "Pressure",
+      "slope": 250.0,
+      "offset": -123.2,
+      "cutoffHz": 0.5,
+      "units": "",
+      "include": true
+    },
+    {
+      "name": "Valve FB",
+      "slope": 1.0,
+      "offset": 0.0,
+      "cutoffHz": 2.0,
+      "units": "",
+      "include": true
+    },
+    {
+      "name": "In Temp",
+      "slope": 22.0,
+      "offset": 32.0,
+      "cutoffHz": 0.1,
+      "units": "",
+      "include": false
+    },
+    {
+      "name": "Pressure",
+      "slope": 5.0,
+      "offset": -25.0,
+      "cutoffHz": 5.0,
+      "units": "",
+      "include": false
+    },
+    {
+      "name": "Spare 0",
+      "slope": 1.0,
+      "offset": 0.0,
+      "cutoffHz": 0.1,
+      "units": "",
+      "include": false
+    },
+    {
+      "name": "Spare 1",
+      "slope": 1.0,
+      "offset": 0.0,
+      "cutoffHz": 1.0,
+      "units": "",
+      "include": false
+    },
+    {
+      "name": "Spare 2",
+      "slope": 1.0,
+      "offset": 0.0,
+      "cutoffHz": 2.0,
+      "units": "",
+      "include": false
+    },
+    {
+      "name": "Spare 3",
+      "slope": 1.0,
+      "offset": 0.0,
+      "cutoffHz": 5.0,
+      "units": "",
+      "include": false
+    }
+  ],
+  "digitalOutputs": [
+    {
+      "name": "Inlet Valve",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": true
+    },
+    {
+      "name": "Outlet Valve",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": true
+    },
+    {
+      "name": "Heater",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": true
+    },
+    {
+      "name": "D3",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": false
+    },
+    {
+      "name": "D4",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": false
+    },
+    {
+      "name": "D5",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": false
+    },
+    {
+      "name": "D6",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": false
+    },
+    {
+      "name": "D7",
+      "normallyOpen": false,
+      "momentary": false,
+      "actuationTime": 0.0,
+      "include": false
+    }
+  ],
+  "analogOutputs": [
+    {
+      "name": "AO0",
+      "minV": 0.8,
+      "maxV": 10.0,
+      "startupV": 0.0,
+      "include": true
+    },
+    {
+      "name": "AO1",
+      "minV": 0.0,
+      "maxV": 10.0,
+      "startupV": 0.0,
+      "include": false
+    }
+  ],
+  "thermocouples": [
+    {
+      "include": true,
+      "ch": 0,
+      "name": "Top Temp",
+      "type": "T",
+      "offset": 0.0
+    },
+    {
+      "include": true,
+      "ch": 1,
+      "name": "Mid High",
+      "type": "T",
+      "offset": 0.0
+    },
+    {
+      "include": true,
+      "ch": 2,
+      "name": "Mid Low",
+      "type": "T",
+      "offset": 0.0
+    },
+    {
+      "include": true,
+      "ch": 3,
+      "name": "Bottom",
+      "type": "T",
+      "offset": 0.0
+    }
+  ],
+  "charts": {}
+}
