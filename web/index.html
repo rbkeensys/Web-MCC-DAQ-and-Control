@@ -10,38 +10,41 @@
 <body>
   <header class="topbar">
     <div class="left">
-      <button id="connectBtn">Connect</button>
+      <button id="connectBtn" class="btn">Connect</button>
       <label>Rate Hz <input id="rate" type="number" min="1" step="1" value="100"></label>
-      <button id="setRate">Set</button>
-      <span id="session"></span>
+      <button id="setRate" class="btn">Set</button>
+      <span id="session" class="badge"></span>
+      <span id="versions" class="muted"></span>
     </div>
     <div class="right">
-      <span id="versions" style="opacity:.7;margin-right:8px"></span>
-      <button id="editConfig">Config.json</button>
-      <button id="editPID">PID.json</button>
-      <button id="editScript">Script.json</button>
-      <button id="recall">Recall Logs</button>
+      <button id="editConfig" class="btn">Config</button>
+      <button id="editPID" class="btn">PID</button>
+      <button id="editScript" class="btn">Script</button>
+      <button id="saveLayout" class="btn">Save Layout</button>
+      <button id="loadLayout" class="btn">Load Layout</button>
     </div>
   </header>
 
   <main class="workspace">
     <aside class="palette">
       <h3>Widgets</h3>
-      <button data-add="chart">Chart</button>
-      <button data-add="gauge">Gauge</button>
-      <button data-add="bars">Bars</button>
-      <button data-add="dobutton">DO Button</button>
-      <button data-add="pidpanel">PID Panel</button>
+      <button class="btn" data-add="chart">Chart</button>
+      <button class="btn" data-add="gauge">Gauge</button>
+      <button class="btn" data-add="bars">Bars</button>
+      <button class="btn" data-add="aoslider">AO Slider</button>
+      <button class="btn" data-add="dobutton">DO Button</button>
+      <button class="btn" data-add="pidpanel">PID Panel</button>
       <h3>Pages</h3>
       <div id="pages"></div>
-      <button id="addPage">+ Page</button>
+      <div class="page-controls">
+        <button id="addPage" class="btn">+ Add Page</button>
+        <button id="delPage" class="btn danger">− Remove Page</button>
+      </div>
     </aside>
     <section class="canvas" id="canvas"></section>
   </main>
 
-  <!-- Modals -->
   <div id="modal" class="modal hidden"></div>
-
-  <script src="/app.js?v=0.3.1" defer></script>
+  <script src="/app.js?v=0.6.3" defer></script>
 </body>
 </html>

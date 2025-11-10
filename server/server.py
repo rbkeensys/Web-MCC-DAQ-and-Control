@@ -9,17 +9,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
 from pydantic import BaseModel
-
 from mcc_bridge import MCCBridge, AIFrame
+from mcc_bridge import BRIDGE_VERSION, HAVE_MCCULW, HAVE_ULDAQ
 from pid_core import PIDManager
 from filters import OnePoleLPFBank
 from logger import SessionLogger
 from app_models import AppConfig, PIDFile, ScriptFile, default_config
-
 import logging, os
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.7.0"
 
 
 MCC_TICK_LOG = os.environ.get("MCC_TICK_LOG", "1") == "1"  # print 1 line per second
@@ -79,6 +77,23 @@ app.add_middleware(
 
 # ---- Layout save/load ----
 LAYOUT_PATH = CFG_DIR / "layout.json"
+
+# diag endpoint MUST be after `app = FastAPI()` (and after MCCBridge import)
+@app.get("/api/diag")
+def api_diag():
+    # Safely pull board numbers if available
+    cfg = getattr(mcc, "cfg", None)
+    b1608 = getattr(getattr(cfg, "board1608", None), "boardNum", None)
+    betc  = getattr(getattr(cfg, "boardetc",  None), "boardNum", None)
+
+    return {
+        "server": "0.6.0",
+        "bridge": BRIDGE_VERSION,
+        "have_mcculw": bool(HAVE_MCCULW),
+        "have_uldaq": bool(HAVE_ULDAQ),
+        "board1608": b1608,
+        "boardetc": betc,
+    }
 
 @app.get("/api/version")
 def get_version():

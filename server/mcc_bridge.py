@@ -313,15 +313,64 @@ class MCCBridge:
     def get_do_snapshot(self):
         return list(self._do_bits)
 
+    # Offline sanity check for E-1608 AO code mapping (±10 V -> 0..65535).
+    def to_code(v):
+        v = max(-10.0, min(10.0, float(v)))
+        return int(round((v + 10.0) * (65535.0 / 20.0)))
+
+    for val in [-12, -10, -5, 0, 5, 10, 12]:
+        code = to_code(val)
+        print(f"{val:>6.2f} V -> code {code:5d}")
+
+    # Expected:
+    #  -10.00 V -> ~0
+    #    0.00 V -> ~32768
+    #  +10.
+
     # ---------------- Analog Outputs (E-1608) ----------------
+    def _dac_counts(self, volts: float) -> int:
+        """Convert volts to 16-bit DAC code for ±10 V range (BIP10V).
+        Clamps to [-10.0, +10.0], returns integer in [0, 65535].
+        """
+        try:
+            v = float(volts)
+        except Exception:
+            v = 0.0
+        # Clamp to device range
+        if v < -10.0: v = -10.0
+        if v > +10.0: v = +10.0
+
+        # Preferred: library conversion (handles calibration)
+        if HAVE_MCCULW and (ul is not None):
+            try:
+                return int(ul.from_eng_units(self.cfg.board1608.boardNum, ULRange.BIP10VOLTS, v))
+            except Exception as e:
+                print(f"[MCCBridge] from_eng_units failed, using math: {e}")
+
+        # Fallback math: map [-10, +10] -> [0, 65535]
+        # LSB ≈ 20 V / 65535 ≈ 0.000305 V
+        code = int(round((v + 10.0) * (65535.0 / 20.0)))
+        if code < 0: code = 0
+        if code > 65535: code = 65535
+        return code
+
     def set_ao(self, index: int, volts: float):
         assert 0 <= index < 2
-        self._ao_vals[index] = float(volts)
-        if HAVE_MCCULW:
+        # Store the requested voltage for UI echo
+        try:
+            self._ao_vals[index] = float(volts)
+        except Exception:
+            self._ao_vals[index] = 0.0
+
+        code = self._dac_counts(volts)  # ALWAYS int [0..65535]
+
+        if HAVE_MCCULW and (ul is not None):
             try:
-                ul.a_out(self.cfg.board1608.boardNum, index, 0, float(volts))
+                # IMPORTANT: Use BIP10VOLTS for E‑1608 (AO is ±10 V)
+                ul.a_out(self.cfg.board1608.boardNum, index, ULRange.BIP10VOLTS, int(code))
             except Exception as e:
                 print(f"[MCCBridge] AO ch{index} write failed: {e}")
+        # If no hardware, snapshot already updated; nothing else to do.
 
     def get_ao_snapshot(self):
         return list(self._ao_vals)

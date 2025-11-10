@@ -15,7 +15,7 @@
       "name": "Pressure",
       "slope": 250.0,
       "offset": -123.2,
-      "cutoffHz": 0.5,
+      "cutoffHz": 0.01,
       "units": "",
       "include": true
     },
@@ -23,7 +23,7 @@
       "name": "Valve FB",
       "slope": 1.0,
       "offset": 0.0,
-      "cutoffHz": 2.0,
+      "cutoffHz": 10.0,
       "units": "",
       "include": true
     },
@@ -81,7 +81,7 @@
       "name": "Inlet Valve",
       "normallyOpen": false,
       "momentary": false,
-      "actuationTime": 0.0,
+      "actuationTime": 2.0,
       "include": true
     },
     {
@@ -179,6 +179,5 @@
       "type": "T",
       "offset": 0.0
     }
-  ],
-  "charts": {}
+  ]
 }
