@@ -6,7 +6,7 @@
 // - Chart, Bars, PID unchanged from 0.6.5
 // - Minor: resilient to tiny first-frame sizes
 
-const UI_VERSION = "0.6.6";
+const UI_VERSION = "0.7.0";
 
 /* ----------------------------- helpers ---------------------------------- */
 const $ = sel => document.querySelector(sel);
@@ -340,10 +340,10 @@ function mountChart(w, body){
         const y=plotB-(yv-ymin)*yscale;
         ctx.beginPath(); ctx.moveTo(plotL,y); ctx.lineTo(plotR,y); ctx.stroke();
       }
+
       // Y & X labels (use local plot rect)
         const left = plotL, right = plotR, top = plotT, bottom = plotB;
         const plotW = right - left, plotH = bottom - top;
-
         // Y labels
         const ny = 5;
         ctx.fillStyle = '#888';
@@ -351,12 +351,12 @@ function mountChart(w, body){
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         for (let i = 0; i <= ny; i++) {
-          const y = top + i * (h / ny);
+          const y = top + i * (plotH / ny);
           const val = (ymax - (ymax - ymin) * i / ny).toFixed(2);
           ctx.fillText(val, left - 6, y);
         }
 
-        // X labels (absolute seconds within current span)
+        // X labels
         const nx = 10;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
@@ -634,11 +634,10 @@ function mountBars(w, body){
       const y=plotB - (i/5)*(plotB-plotT);
       ctx.beginPath(); ctx.moveTo(plotL,y); ctx.lineTo(plotR,y); ctx.stroke();
     }
-    // Y labels (use local plot rect)
+     // Y labels (use local plot rect)
     const left = plotL, right = plotR, top = plotT, bottom = plotB;
     const plotW = right - left, plotH = bottom - top;
     const ny = 5;
-
     ctx.fillStyle = '#888';
     ctx.font = '10px monospace';
     ctx.textAlign = 'right';
@@ -911,7 +910,7 @@ function normalizeLayoutPages(pages){
         w.opts.doIndex   = Number.isInteger(w.opts.doIndex) ? w.opts.doIndex : 0;
         w.opts.activeHigh= (w.opts.activeHigh !== false);
         w.opts.mode      = w.opts.mode ?? 'momentary'; // 'momentary' | 'toggle' | 'buzz'
-        w.opts.actTime   = Number.isFinite(w.opts.actTime) ? w.opts.actTime : 0;
+        w.opts.actuationTime = Number.isFinite(w.opts.actuationTime) ? w.opts.actuationTime : 0;
         break;
       case 'aoslider':
         w.opts.title   = w.opts.title ?? 'AO';

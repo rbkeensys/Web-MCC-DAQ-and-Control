@@ -87,7 +87,7 @@ def api_diag():
     betc  = getattr(getattr(cfg, "boardetc",  None), "boardNum", None)
 
     return {
-        "server": "0.6.0",
+        "server": SERVER_VERSION,
         "bridge": BRIDGE_VERSION,
         "have_mcculw": bool(HAVE_MCCULW),
         "have_uldaq": bool(HAVE_ULDAQ),
@@ -447,15 +447,15 @@ def download_csv(session: str):
     path = LOGS_DIR/session/"session.csv"
     return FileResponse(str(path), filename=f"{session}.csv")
 
-@app.get("/api/diag")
-def diag():
-    from mcc_bridge import HAVE_MCCULW, HAVE_ULDAQ
-    return {
-        "mcculw": HAVE_MCCULW,
-        "uldaq": HAVE_ULDAQ,
-        "board1608": app_cfg.board1608.model_dump(),
-        "boardetc": app_cfg.boardetc.model_dump(),
-    }
+# @app.get("/api/diag")
+# def diag():
+#     from mcc_bridge import HAVE_MCCULW, HAVE_ULDAQ
+#     return {
+#         "mcculw": HAVE_MCCULW,
+#         "uldaq": HAVE_ULDAQ,
+#         "board1608": app_cfg.board1608.model_dump(),
+#         "boardetc": app_cfg.boardetc.model_dump(),
+#     }
 
 # ---------- WebSocket ----------
 @app.websocket("/ws")
@@ -487,7 +487,7 @@ async def ws(ws: WebSocket):
                 print(f"[WS] task exit: {e}")
             run_task = None
 
-app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")
+# app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn, os
