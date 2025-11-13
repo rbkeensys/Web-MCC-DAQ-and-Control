@@ -338,15 +338,6 @@ async def acq_loop():
                 await broadcast(frame)
                 bcast_ctr = 0
 
-            # log & broadcast
-            session_logger.write(frame)
-            await broadcast(frame)
-
-            ticks += 1
-            # optional once-per-second heartbeat (disabled by default)
-            # if LOG_TICKS and ticks % int(max(1, acq_rate_hz)) == 0:
-            #     log.info(f"[tick] ai0={ai_scaled[0]:.3f} do0={do[0]} ao0={ao[0]:.3f}")
-
             if ticks < MCC_DUMP_FIRST:
                 print(f"[DBG] tick#{ticks} ai={['%.3f'%v for v in ai_raw]}  ao={['%.3f'%v for v in ao]}  do={do}  tc={['%.1f'%v if v is not None else None for v in (tc_vals or [])]}")
             # if MCC_TICK_LOG and ticks % int(max(1, acq_rate_hz)) == 0:
@@ -359,7 +350,15 @@ async def acq_loop():
             session_logger.close()
             session_logger = None
 
+
+
 # ---------- REST: configuration ----------
+class BuzzStart(BaseModel):
+    index: int
+    hz: float = 10.0
+    active_high: bool = True
+
+
 @app.get("/api/config")
 def get_config():
     # read latest from disk so external edits are visible
@@ -419,14 +418,17 @@ def set_do(req: DOReq):
     mcc.set_do(req.index, req.state, active_high=req.active_high)
     return {"ok": True}
 
+class BuzzStop(BaseModel):
+    index: int
+
 @app.post("/api/do/buzz/start")
-async def buzz_start(req: BuzzReq):
-    await mcc.start_buzz(req.index, req.hz, active_high=req.active_high)
+async def api_buzz_start(req: BuzzStart):
+    await mcc.start_buzz(int(req.index), float(req.hz), bool(req.active_high))
     return {"ok": True}
 
 @app.post("/api/do/buzz/stop")
-async def buzz_stop(req: BuzzReq):
-    await mcc.stop_buzz(req.index)
+async def api_buzz_stop(req: BuzzStop):
+    await mcc.stop_buzz(int(req.index))
     return {"ok": True}
 
 @app.post("/api/ao/set")

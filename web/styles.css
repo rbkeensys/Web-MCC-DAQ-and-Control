@@ -1,4 +1,4 @@
-:root { --bg:#0f1115; --fg:#e6e6e6; --muted:#9094a1; --accent:#79c0ff; --card:#171923; --good:#2faa60; --bad:#d84a4a; --default:#636a7b; }
+:root { --bg:#0f1115; --fg:#e6e6e6; --muted:#9094a1; --accent:#79c0ff; --card:#171923; --good:#2faa60; --bad:#d84a4a; --default:#636a7b; --grid:#2a2f44; --grid2:#1e2235; --cursor:#ff4d4d; }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial; }
 .topbar { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#11131a; border-bottom:1px solid #1f2330; }
@@ -47,3 +47,11 @@ table.form th, table.form td { border-bottom:1px solid #252a3f; padding:6px; tex
 table.form th { color:#a8b3cf; font-weight:600; }
 table.form input, table.form select { width:100%; font-size:12px; padding:4px 6px; }
 .compact .form input, .compact .form select { font-size:12px; padding:3px 5px; }
+
+/* Chart context menu */
+.ctx { position:absolute; z-index:9999; background:#121526; border:1px solid #2b3154; border-radius:8px; padding:6px; min-width:220px; box-shadow:0 10px 30px rgba(0,0,0,0.4); }
+.ctx h4 { margin:6px 8px; font-size:13px; color:#cfd6f0; }
+.ctx .row { padding:4px 8px; }
+.ctx label { display:flex; align-items:center; gap:8px; font-size:13px; }
+.ctx table { width:100%; border-collapse:collapse; margin-top:4px; }
+.ctx th, .ctx td { padding:4px 6px; border-bottom:1px solid #1d2237; font-size:12px; color:#a8b3cf; }

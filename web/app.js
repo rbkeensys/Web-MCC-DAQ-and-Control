@@ -1,23 +1,52 @@
-// app.js — UI v0.6.3
-const UI_VERSION = "0.6.3";
-let hwReady = false;
-let configCache = null;
+// app.js — UI v0.6.6
+// Changes from 0.6.5:
+// - Buzz: guaranteed stop on pointer up (double-stop + raw off fallback), no runaway
+// - Connect button reflects state ("Connected" / "Connect")
+// - Gauge: correct upper-semicircle orientation (no flipped/pointing down); safe radii
+// - Chart, Bars, PID unchanged from 0.6.5
+// - Minor: resilient to tiny first-frame sizes
 
+const UI_VERSION = "0.6.6";
+
+/* ----------------------------- helpers ---------------------------------- */
 const $ = sel => document.querySelector(sel);
-const el = (tag, props={}, children=[]) => {
-  const n = Object.assign(document.createElement(tag), props||{});
-  if (props && props.className===undefined && props.class) n.className = props.class;
+const el = (tag, props = {}, children = []) => {
+  const n = Object.assign(document.createElement(tag), props || {});
+  if (props && props.className === undefined && props.class) n.className = props.class;
   if (!Array.isArray(children)) children = [children];
   for (const c of children) n.append(c instanceof Node ? c : document.createTextNode(c));
   return n;
 };
 function colorFor(i){ const p=['#7aa2f7','#9ece6a','#f7768e','#bb9af7','#e0af68','#73daca','#f4b8e4','#ffd479']; return p[i%p.length]; }
 function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+function safeArc(ctx, cx, cy, r, a0, a1) {
+  if (!Number.isFinite(r) || r <= 0) return false;
+  ctx.arc(cx, cy, r, a0, a1);
+  return true;
+}
 
-let ws=null, sessionDir='', connected=false;
-const state={ pages:[], ai:Array(8).fill(0), ao:Array(2).fill(0), do:Array(8).fill(0), tc:[], pid:[] };
+/* ------------------------------ state ----------------------------------- */
+let hwReady = false;
+let configCache = null;
+let ws = null, sessionDir = '', connected = false;
 
-window.addEventListener('DOMContentLoaded',()=>{ wireUI(); ensureStarterPage(); showVersions(); loadConfigCache(); connect(); });
+const state = {
+  pages: [],
+  ai: Array(8).fill(0),
+  ao: Array(2).fill(0),
+  do: Array(8).fill(0),
+  tc: [],
+  pid: []
+};
+
+/* ------------------------ boot / wiring --------------------------------- */
+window.addEventListener('DOMContentLoaded', () => {
+  wireUI();
+  ensureStarterPage();
+  showVersions();
+  loadConfigCache();
+  connect();
+});
 
 function wireUI(){
   $('#connectBtn')?.addEventListener('click', connect);
@@ -29,83 +58,182 @@ function wireUI(){
   $('#loadLayout')?.addEventListener('click', loadLayoutFromFile);
   $('#addPage')?.addEventListener('click', addPage);
   $('#delPage')?.addEventListener('click', removeActivePage);
-  document.querySelectorAll('[data-add]').forEach(btn=>btn.addEventListener('click',()=>addWidget(btn.dataset.add)));
+  document.querySelectorAll('[data-add]').forEach(btn => btn.addEventListener('click', ()=>addWidget(btn.dataset.add)));
+}
+
+function wireDoBuzzMomentary(btn) {
+  const idx = +btn.dataset.index;                // required: data-index="0..7"
+  const hz  = +(btn.dataset.buzzhz || 10);
+  const ah  = (btn.dataset.activeHigh !== 'false');
+
+  let pressed = false;
+  const start = () => {
+    if (pressed) return;
+    pressed = true;
+    fetch('/api/do/buzz/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ index: idx, hz, active_high: ah })
+    });
+  };
+  const stop = () => {
+    if (!pressed) return;
+    pressed = false;
+    fetch(`/api/do/buzz/stop?index=${idx}`, { method: 'POST' });
+  };
+
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('touchstart', start, {passive:true});
+
+  ['mouseup','mouseleave','touchend','touchcancel','blur']
+    .forEach(ev => btn.addEventListener(ev, stop));
 }
 
 async function showVersions(){
   const versions=[`UI ${UI_VERSION}`];
-  try{ const r=await fetch('/api/diag'); if(r.ok){ const d=await r.json();
-    if(d.server) versions.push(`Server ${d.server}`);
-    if(d.bridge) versions.push(`Bridge ${d.bridge}`);
-    if(typeof d.have_mcculw!=='undefined') hwReady=!!d.have_mcculw;
-  }}catch{}
+  try{
+    const r=await fetch('/api/diag');
+    if(r.ok){
+      const d=await r.json();
+      if(d.server) versions.push(`Server ${d.server}`);
+      if(d.bridge) versions.push(`Bridge ${d.bridge}`);
+      if(typeof d.have_mcculw!=='undefined') hwReady=!!d.have_mcculw;
+    }
+  }catch{}
   $('#versions').textContent=versions.join(' • ');
 }
 
+function updateConnectBtn(){
+  const b = $('#connectBtn');
+  if (!b) return;
+  if (connected){
+    b.textContent = 'Connected';
+    b.classList.add('connected');
+  } else {
+    b.textContent = 'Connect';
+    b.classList.remove('connected');
+  }
+}
+
 async function loadConfigCache(){
-  try { const r=await fetch('/api/config'); if (r.ok) configCache = await r.json(); } catch (_e) {}
+  try { const r=await fetch('/api/config'); if (r.ok) configCache = await r.json(); } catch {}
 }
 
 async function setRate(){
   const hz=parseFloat($('#rate').value)||0;
-  if(hz>=1){ try{ await fetch('/api/acq/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hz})}); }catch(e){ alert('Set rate failed: '+e.message);}}
+  if(hz>=1){
+    try{
+      await fetch('/api/acq/rate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hz})});
+    }catch(e){ alert('Set rate failed: '+e.message); }
+  }
 }
 
 function connect(){
-  if(ws) try{ws.close();}catch{}
-  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-  ws.onopen=()=>{ connected=true; updateDOButtons(); };
-  ws.onclose=()=>{ connected=false; updateDOButtons(); };
+  if(ws) try{ ws.close(); }catch{}
+  ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+  ws.onopen = ()=>{ connected=true; updateConnectBtn(); updateDOButtons(); };
+  ws.onclose= ()=>{ connected=false; updateConnectBtn(); updateDOButtons(); };
   ws.onmessage=(ev)=>{
     const msg=JSON.parse(ev.data);
     if(msg.type==='session'){ sessionDir=msg.dir; $('#session').textContent=sessionDir; }
-    if(msg.type==='tick'){ state.ai=msg.ai||state.ai; state.ao=msg.ao||state.ao; state.do=msg.do||state.do; state.tc=msg.tc||state.tc; state.pid=msg.pid||state.pid; onTick(); }
+    if(msg.type==='tick'){
+      state.ai=msg.ai||state.ai;
+      state.ao=msg.ao||state.ao;
+      state.do=msg.do||state.do;
+      state.tc=msg.tc||state.tc;
+      state.pid=msg.pid||state.pid;
+      onTick();
+    }
   };
+  updateConnectBtn();
 }
 
-let activePageIndex=0;
-function ensureStarterPage(){ if(!state.pages.length){ state.pages=[{id:crypto.randomUUID(),name:'Page 1',widgets:[]}]; } refreshPages(); setActivePage(0); }
-function refreshPages(){ const cont=$('#pages'); cont.innerHTML=''; state.pages.forEach((p,idx)=>{ const b=el('button',{className:'btn',onclick:()=>setActivePage(idx)}, p.name||('Page '+(idx+1))); if(idx===activePageIndex) b.classList.add('active'); cont.append(b); }); }
-function setActivePage(idx){ activePageIndex=clamp(idx,0,state.pages.length-1); refreshPages(); renderPage(); }
-function addPage(){ state.pages.push({id:crypto.randomUUID(),name:`Page ${state.pages.length+1}`,widgets:[]}); setActivePage(state.pages.length-1); }
-function removeActivePage(){ if(state.pages.length<=1){ alert('At least one page is required.'); return; } state.pages.splice(activePageIndex,1); setActivePage(Math.max(0,activePageIndex-1)); }
+/* ---------------------------- pages ------------------------------------- */
+let activePageIndex = 0;
 
-function addWidget(type){ const w={id:crypto.randomUUID(), type, x:40, y:40, w:460, h:280, opts:defaultsFor(type)}; state.pages[activePageIndex].widgets.push(w); renderPage(); }
+function ensureStarterPage(){
+  if(!state.pages.length){
+    state.pages=[{id:crypto.randomUUID(), name:'Page 1', widgets:[]}];
+  }
+  refreshPages();
+  setActivePage(0);
+}
+function refreshPages(){
+  const cont=$('#pages');
+  cont.innerHTML='';
+  state.pages.forEach((p,idx)=>{
+    const b=el('button',{className:'btn',onclick:()=>setActivePage(idx)}, p.name || ('Page '+(idx+1)));
+    if(idx===activePageIndex) b.classList.add('active');
+    cont.append(b);
+  });
+}
+function setActivePage(idx){
+  activePageIndex=clamp(idx,0,state.pages.length-1);
+  refreshPages();
+  renderPage();
+}
+function addPage(){
+  state.pages.push({id:crypto.randomUUID(), name:`Page ${state.pages.length+1}`, widgets:[]});
+  setActivePage(state.pages.length-1);
+}
+function removeActivePage(){
+  if(state.pages.length<=1){ alert('At least one page is required.'); return; }
+  state.pages.splice(activePageIndex,1);
+  setActivePage(Math.max(0,activePageIndex-1));
+}
+
+/* -------------------------- widgets ------------------------------------- */
+function addWidget(type){
+  const w={ id:crypto.randomUUID(), type, x:40, y:40, w:460, h:280, opts:defaultsFor(type) };
+  state.pages[activePageIndex].widgets.push(w);
+  renderPage();
+}
 function defaultsFor(type){
   switch(type){
-    case 'chart': return { title:'Chart', series:[], span:10, paused:false, scale:'auto', min:0, max:10, filterHz:0 };
-    case 'gauge': return { title:'Gauge', needles:[], scale:'manual', min:0, max:10 };
-    case 'bars':  return { title:'Bars', series:[], scale:'manual', min:0, max:10 };
-    case 'dobutton': return { title:'DO', doIndex:0, activeHigh:true, mode:'toggle', buzzHz:2 };
+    case 'chart':    return { title:'Chart', series:[], span:10, paused:false, scale:'auto', min:0, max:10, filterHz:0, cursorMode:'follow' };
+    case 'gauge':    return { title:'Gauge', needles:[], scale:'manual', min:0, max:10 };
+    case 'bars':     return { title:'Bars', series:[], scale:'manual', min:0, max:10 };
+    case 'dobutton': return { title:'DO', doIndex:0, activeHigh:true, mode:'toggle', buzzHz:2, actuationTime:0, _timer:null };
     case 'pidpanel': return { title:'PID', loopIndex:0, showControls:true };
     case 'aoslider': return { title:'AO', aoIndex:0, min:0, max:10, step:0.0025, live:true };
-  } return {};
+  }
+  return {};
 }
+
 function renderPage(){
   const cv=$('#canvas'); cv.innerHTML='';
   const page=state.pages[activePageIndex];
   for(const w of page.widgets){
     const node=renderWidget(w);
-    node.style.left=(w.x||0)+'px'; node.style.top=(w.y||0)+'px';
-    node.style.width=(w.w||300)+'px'; node.style.height=(w.h||200)+'px';
+    node.style.left=(w.x||0)+'px';
+    node.style.top=(w.y||0)+'px';
+    node.style.width=(w.w||300)+'px';
+    node.style.height=(w.h||200)+'px';
     cv.append(node);
-    makeDragResize(node,w, node.querySelector('header'), node.querySelector('.resize'));
-  } updateDOButtons();
+    makeDragResize(node, w, node.querySelector('header'), node.querySelector('.resize'));
+  }
+  updateDOButtons();
 }
+
 function renderWidget(w){
-  const box=el('div',{className:'widget',id:'w_'+w.id});
+  const box=el('div',{className:'widget', id:'w_'+w.id});
   const tools=el('div',{className:'tools'},[
-    el('span',{className:'icon',title:'Settings',onclick:()=>openWidgetSettings(w)},'⚙'),
-    el('span',{className:'icon',title:'Close',onclick:()=>removeWidget(w.id)},'×')
+    el('span',{className:'icon', title:'Settings', onclick:()=>openWidgetSettings(w)}, '⚙'),
+    el('span',{className:'icon', title:'Close',    onclick:()=>removeWidget(w.id)}, '×')
   ]);
-  const header=el('header',{},[ el('span',{className:'title'}, w.opts.title||w.type), el('div',{className:'spacer'}), el('div',{className:'opts'}, widgetOptions(w)), tools ]);
+  const header=el('header',{},[
+    el('span',{className:'title'}, w.opts.title||w.type),
+    el('div',{className:'spacer'}),
+    el('div',{className:'opts'}, widgetOptions(w)),
+    tools
+  ]);
   const body=el('div',{className:'body'});
   const rez=el('div',{className:'resize'});
   box.append(header,body,rez);
   switch(w.type){
-    case 'chart': mountChart(w,body); break;
-    case 'gauge': mountGauge(w,body); break;
-    case 'bars':  mountBars(w,body); break;
+    case 'chart':    mountChart(w,body); break;
+    case 'gauge':    mountGauge(w,body); break;
+    case 'bars':     mountBars(w,body); break;
     case 'dobutton': mountDOButton(w,body); break;
     case 'pidpanel': mountPIDPanel(w,body); break;
     case 'aoslider': mountAOSlider(w,body); break;
@@ -120,54 +248,225 @@ function removeWidget(id){
 function widgetOptions(w){
   const opts=[];
   if (w.type==='chart'||w.type==='gauge'||w.type==='bars'){
-    const sel=el('select',{value:w.opts.scale},[el('option',{value:'auto'},'Auto'), el('option',{value:'manual'},'Manual')]);
+    const sel=el('select',{value:w.opts.scale},[
+      el('option',{value:'auto'}, 'Auto'),
+      el('option',{value:'manual'}, 'Manual')
+    ]);
     sel.onchange=e=>{ w.opts.scale=e.target.value; };
-    const min=el('input',{type:'number',value:w.opts.min,step:'any',style:'width:90px'}),
-          max=el('input',{type:'number',value:w.opts.max,step:'any',style:'width:90px'});
+    const min=el('input',{type:'number',value:w.opts.min, step:'any', style:'width:90px'});
+    const max=el('input',{type:'number',value:w.opts.max, step:'any', style:'width:90px'});
     const sync=()=>{ w.opts.min=parseFloat(min.value)||0; w.opts.max=parseFloat(max.value)||0; };
     min.oninput=sync; max.oninput=sync;
     opts.push(el('span',{},'Scale:'), sel, el('span',{},'Min:'), min, el('span',{},'Max:'), max);
   }
   if (w.type==='chart'){
-    const span=el('input',{type:'number',value:w.opts.span,min:1,step:1,style:'width:70px'}); span.oninput=()=>{ w.opts.span=parseFloat(span.value)||10; };
-    const filt=el('input',{type:'number',value:w.opts.filterHz||0,min:0,step:'any',style:'width:80px'}); filt.oninput=()=>{ w.opts.filterHz=parseFloat(filt.value)||0; };
-    const pause=el('button',{className:'btn',onclick:()=>{ w.opts.paused=!w.opts.paused; pause.textContent=w.opts.paused?'Resume':'Pause'; }}, w.opts.paused?'Resume':'Pause');
+    const span=el('input',{type:'number', value:w.opts.span, min:1, step:1, style:'width:70px'});
+    span.oninput=()=>{ w.opts.span=parseFloat(span.value)||10; };
+    const filt=el('input',{type:'number', value:w.opts.filterHz||0, min:0, step:'any', style:'width:80px'});
+    filt.oninput =()=>{ w.opts.filterHz=parseFloat(filt.value)||0; };
+    const pause=el('button',{className:'btn', onclick:()=>{ w.opts.paused=!w.opts.paused; pause.textContent=w.opts.paused?'Resume':'Pause'; }},
+      w.opts.paused?'Resume':'Pause'
+    );
     opts.push(el('span',{},'Span[s]:'), span, el('span',{},'Filter[Hz]:'), filt, pause);
   }
   return opts;
 }
 
-// chart
+/* ------------------------------- chart ---------------------------------- */
 const chartBuffers=new Map();
-const chartFilters=new Map(); // per widget: { _t, si -> y }
+const chartFilters=new Map();
+const chartCursor=new Map(); // w.id -> {x: number|null, mode:'follow'|'current', ctxEl:HTMLElement|null}
+
 function mountChart(w, body){
   const legend=el('div',{className:'legend'}); body.append(legend);
-  const canvas=el('canvas'); body.append(canvas); const ctx=canvas.getContext('2d');
+  const canvas=el('canvas'); body.append(canvas);
+  const ctx=canvas.getContext('2d');
+
+  chartCursor.set(w.id, {x:null, mode:w.opts.cursorMode||'follow', ctxEl:null});
+
+  canvas.addEventListener('mousemove', (e)=>{
+    const rect=canvas.getBoundingClientRect(); const x=e.clientX-rect.left;
+    const cur=chartCursor.get(w.id); if(!cur) return;
+    cur.x=x; chartCursor.set(w.id,cur);
+  });
+  canvas.addEventListener('mouseleave', ()=>{
+    const cur=chartCursor.get(w.id);
+    if(cur){ cur.x=null; chartCursor.set(w.id,cur); }
+  });
+  canvas.addEventListener('contextmenu', (e)=>{
+    e.preventDefault();
+    const cur=chartCursor.get(w.id)||{x:null,mode:'follow',ctxEl:null};
+    if (cur.ctxEl && cur.ctxEl.parentNode) cur.ctxEl.parentNode.removeChild(cur.ctxEl);
+    const menu=buildChartContextMenu(w, canvas, legend);
+    document.body.append(menu); menu.style.left=e.pageX+'px'; menu.style.top=e.pageY+'px';
+    cur.ctxEl=menu; chartCursor.set(w.id,cur);
+  });
+
   function draw(){
     if (w.opts.paused){ requestAnimationFrame(draw); return; }
-    const buf=chartBuffers.get(w.id)||[]; const W=canvas.clientWidth,H=canvas.clientHeight; canvas.width=W; canvas.height=H;
-    ctx.clearRect(0,0,W,H); ctx.strokeStyle='#3b425e'; ctx.lineWidth=1; ctx.strokeRect(40,10,W-50,H-30);
+
+    const buf=chartBuffers.get(w.id)||[];
+    const W=canvas.clientWidth, H=canvas.clientHeight;
+    canvas.width=W; canvas.height=H;
+    const plotL=40, plotR=W-10, plotT=10, plotB=H-30;
+
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='#3b425e'; ctx.lineWidth=1;
+    ctx.strokeRect(plotL,plotT,plotR-plotL,plotB-plotT);
+
     if(buf.length){
-      const t0=buf[0].t,t1=buf[buf.length-1].t,dt=Math.max(1e-6,t1-t0);
-      let ymin=Infinity,ymax=-Infinity; for(let si=0;si<w.opts.series.length;si++){ for(const b of buf){ const y=b.v[si]; if(y<ymin) ymin=y; if(y>ymax) ymax=y; } }
+      const t0=buf[0].t, t1=buf[buf.length-1].t, dt=Math.max(1e-6,t1-t0);
+      let ymin=Infinity,ymax=-Infinity;
+      for(let si=0;si<w.opts.series.length;si++){
+        for(const b of buf){ const y=b.v[si]; if(y<ymin) ymin=y; if(y>ymax) ymax=y; }
+      }
       if (w.opts.scale==='manual'){ ymin=w.opts.min; ymax=w.opts.max; }
       if(!(isFinite(ymin)&&isFinite(ymax))||ymin===ymax){ ymin-=1; ymax+=1; }
-      const yscale=(H-40)/(ymax-ymin), xscale=(W-60)/dt;
+      const yscale=(plotB-plotT)/(ymax-ymin), xscale=(plotR-plotL)/dt;
+
+      // X grid: 10 divisions
+      const divs=10; const gridDt = (w.opts.span||10)/divs;
+      const firstGrid = Math.ceil(t0 / gridDt)*gridDt;
+      ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--grid') || '#2a2f44';
+      ctx.lineWidth=1;
+      for(let gx=firstGrid; gx<=t1+1e-6; gx+=gridDt){
+        const x=plotL+(gx-t0)*xscale;
+        ctx.beginPath(); ctx.moveTo(x,plotT); ctx.lineTo(x,plotB); ctx.stroke();
+      }
+      // Y grid
+      const gyLines=5;
+      for(let i=0;i<=gyLines;i++){
+        const yv=ymin+(i/gyLines)*(ymax-ymin);
+        const y=plotB-(yv-ymin)*yscale;
+        ctx.beginPath(); ctx.moveTo(plotL,y); ctx.lineTo(plotR,y); ctx.stroke();
+      }
+      // Y & X labels (use local plot rect)
+        const left = plotL, right = plotR, top = plotT, bottom = plotB;
+        const plotW = right - left, plotH = bottom - top;
+
+        // Y labels
+        const ny = 5;
+        ctx.fillStyle = '#888';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        for (let i = 0; i <= ny; i++) {
+          const y = top + i * (h / ny);
+          const val = (ymax - (ymax - ymin) * i / ny).toFixed(2);
+          ctx.fillText(val, left - 6, y);
+        }
+
+        // X labels (absolute seconds within current span)
+        const nx = 10;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        for (let i = 0; i <= nx; i++) {
+          const x = left + i * (plotW / nx);
+          const t = (t0 + (i * (plotW / nx)) / xscale).toFixed(2);
+          ctx.fillText(t, x, bottom + 2);
+        }
+
+      // series
       legend.innerHTML='';
       w.opts.series.forEach((s,si)=>{
         ctx.beginPath(); ctx.lineWidth=1.5; ctx.strokeStyle=colorFor(si);
-        let first=true; for(const b of buf){ const x=40+(b.t-t0)*xscale, y=H-30-(b.v[si]-ymin)*yscale; if(first){ctx.moveTo(x,y); first=false;} else ctx.lineTo(x,y); } ctx.stroke();
+        let first=true;
+        for(const b of buf){
+          const x=plotL+(b.t-t0)*xscale, y=plotB-(b.v[si]-ymin)*yscale;
+          if(first){ ctx.moveTo(x,y); first=false; } else ctx.lineTo(x,y);
+        }
+        ctx.stroke();
         const lab = s.name && s.name.length ? s.name : labelFor(s);
-        legend.append(el('div',{className:'item'},[el('span',{className:'swatch', style:`background:${colorFor(si)}`},''), lab]));
+        legend.append(el('div',{className:'item'},[
+          el('span',{className:'swatch', style:`background:${colorFor(si)}`},''), lab
+        ]));
       });
-    } requestAnimationFrame(draw);
-  } draw();
+
+      // cursor
+      const cur=chartCursor.get(w.id);
+      if (cur && cur.x!==null && cur.x>=plotL && cur.x<=plotR){
+        ctx.strokeStyle=(getComputedStyle(document.documentElement).getPropertyValue('--cursor')||'#ff4d4d').trim();
+        ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cur.x,plotT); ctx.lineTo(cur.x,plotB); ctx.stroke();
+        if (cur.ctxEl && cur.ctxEl.parentNode){
+          updateChartPopupValues(w, cur.ctxEl, buf, t0, xscale, plotL, ymin, ymax, (plotB-plotT)/(ymax-ymin), cur.x);
+        }
+      } else if (cur && cur.ctxEl && cur.ctxEl.parentNode && getPopupMode(cur.ctxEl)==='current'){
+        updateChartPopupValues(w, cur.ctxEl, buf, t0, xscale, plotL, ymin, ymax, (plotB-plotT)/(ymax-ymin), null);
+      }
+    }
+
+    requestAnimationFrame(draw);
+  }
+  draw();
 }
+
+function buildChartContextMenu(w, canvas, legend){
+  const menu=el('div',{className:'ctx'});
+  const title=el('h4',{}, (w.opts.title||'Chart')+' — Data');
+  const follow=el('label',{},[el('input',{type:'radio',name:'mode',value:'follow'}),'Follow Cursor']);
+  const current=el('label',{},[el('input',{type:'radio',name:'mode',value:'current'}),'Current']);
+  const cur=chartCursor.get(w.id)||{mode:'follow'};
+  setTimeout(()=>{
+    const radios=menu.querySelectorAll('input[type=radio][name=mode]');
+    radios.forEach(r=>{ if (r.value=== (cur.mode||'follow')) r.checked=true; });
+  });
+  menu.append(title, el('div',{className:'row'},follow), el('div',{className:'row'},current));
+  const table=el('table',{},[
+    el('thead',{}, el('tr',{}, [el('th',{},'Series'), el('th',{},'Value')])),
+    el('tbody',{})
+  ]);
+  menu.append(table);
+  menu.addEventListener('change',(e)=>{
+    if (e.target && e.target.name==='mode'){
+      const cur=chartCursor.get(w.id)||{x:null, mode:'follow', ctxEl:menu};
+      cur.mode=e.target.value; chartCursor.set(w.id,cur);
+    }
+  });
+  const close=()=>{ if(menu.parentNode) menu.parentNode.removeChild(menu); };
+  const away=(ev)=>{ if (!menu.contains(ev.target)) { document.removeEventListener('mousedown', away); close(); } };
+  setTimeout(()=>document.addEventListener('mousedown', away));
+  return menu;
+}
+function getPopupMode(menu){
+  const v=menu.querySelector('input[type=radio][name=mode]:checked'); return v ? v.value : 'follow';
+}
+function updateChartPopupValues(w, menu, buf, t0, xscale, plotL, ymin, ymax, yscale, cursorX){
+  const mode=getPopupMode(menu);
+  const tbody = menu.querySelector('tbody'); if(!tbody) return;
+  const vals=[];
+  if (!buf.length){ tbody.innerHTML=''; return; }
+  if (mode==='follow' && cursorX!==null){
+    const t = t0 + (cursorX-plotL)/xscale;
+    const k = findNearestIndex(buf, t);
+    const v = buf[k].v;
+    (w.opts.series||[]).forEach((s,si)=>{ vals.push([s, v[si]]); });
+  } else {
+    const v = buf[buf.length-1].v;
+    (w.opts.series||[]).forEach((s,si)=>{ vals.push([s, v[si]]); });
+  }
+  tbody.innerHTML='';
+  vals.forEach(([s,v],si)=>{
+    const lab = s.name && s.name.length ? s.name : labelFor(s);
+    const tr=el('tr',{},[ el('td',{}, lab), el('td',{}, (v!=null && isFinite(v))? v.toFixed(6) : '—') ]);
+    tbody.append(tr);
+  });
+}
+function findNearestIndex(buf, t){
+  let lo=0, hi=buf.length-1;
+  while (lo<hi){
+    const mid=(lo+hi)>>1;
+    if (buf[mid].t < t) lo=mid+1; else hi=mid;
+  }
+  if (lo>0 && Math.abs(buf[lo].t - t) > Math.abs(buf[lo-1].t - t)) return lo-1;
+  return lo;
+}
+
 function updateChartBuffers(){
   for (const p of state.pages){
     for (const w of p.widgets){
       if (w.type!=='chart') continue;
-      const buf=chartBuffers.get(w.id)||[]; const t=performance.now()/1000;
+      const buf=chartBuffers.get(w.id)||[];
+      const t=performance.now()/1000;
       const raw=(w.opts.series||[]).map(sel=>readSelection(sel));
       let filtered=raw;
       const fc = w.opts.filterHz||0;
@@ -181,17 +480,16 @@ function updateChartBuffers(){
           const y = prev + alpha*(v - prev);
           cf[si]=y; return y;
         });
-        cf._t = t;
+        cf._t=t;
         chartFilters.set(w.id, cf);
       }
       buf.push({t, v: filtered});
       const span=Math.max(1,w.opts.span||10);
-      while(buf.length&&(t-buf[0].t)>span) buf.shift();
+      while(buf.length && (t - buf[0].t) > span) buf.shift();
       chartBuffers.set(w.id,buf);
     }
   }
 }
-
 function labelFor(sel){
   if (!configCache) return `${sel.kind.toUpperCase()}${sel.index}`;
   try{
@@ -199,121 +497,282 @@ function labelFor(sel){
     if(sel.kind==='ao'){ return configCache.analogOutputs?.[sel.index]?.name || `AO${sel.index}`; }
     if(sel.kind==='do'){ return configCache.digitalOutputs?.[sel.index]?.name || `DO${sel.index}`; }
     if(sel.kind==='tc'){ return configCache.thermocouples?.[sel.index]?.name || `TC${sel.index}`; }
-  }catch(_e){}
+  }catch{}
   return `${sel.kind.toUpperCase()}${sel.index}`;
 }
 
-// gauge
+/* ------------------------------- gauge ---------------------------------- */
 function mountGauge(w, body){
   const legend=el('div',{className:'legend'}); body.append(legend);
-  const canvas=el('canvas'); body.append(canvas); const ctx=canvas.getContext('2d');
+  const canvas=el('canvas'); body.append(canvas);
+  const ctx=canvas.getContext('2d');
+
   function draw(){
-    const W=canvas.clientWidth,H=canvas.clientHeight; canvas.width=W; canvas.height=H; ctx.clearRect(0,0,W,H);
-    const cx=W/2,cy=H*0.7,r=Math.min(W,H)*0.45,start=Math.PI,end=0;
+    const W=canvas.clientWidth, H=canvas.clientHeight;
+    canvas.width=W; canvas.height=H;
+    ctx.clearRect(0,0,W,H);
+
+    // skip tiny first-frame sizes to avoid negative radii
+    if (W < 40 || H < 40) { requestAnimationFrame(draw); return; }
+
     let lo=w.opts.min, hi=w.opts.max;
-    if (w.opts.scale==='auto'){ const vals=(w.opts.needles||[]).map(sel=>readSelection(sel)); lo=Math.min(...vals,0); hi=Math.max(...vals,1); if(lo===hi){lo-=1;hi+=1;} }
-    // arc + ticks (drawn on TOP semicircle)
-    ctx.strokeStyle='#3b425e'; ctx.lineWidth=10; ctx.beginPath(); ctx.arc(cx,cy,r,start,end); ctx.stroke();
-    ctx.fillStyle='#a8b3cf'; ctx.font='12px system-ui';
-    for(let t=0;t<=5;t++){
-      const frac=t/5, ang=Math.PI - frac*Math.PI;
-      const x1=cx+Math.cos(ang)*(r-8), y1=cy- Math.sin(ang)*(r-8);
-      const x2=cx+Math.cos(ang)*(r+2), y2=cy- Math.sin(ang)*(r+2);
-      ctx.strokeStyle='#3b425e'; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
-      const val=(lo+frac*(hi-lo)).toFixed(2);
-      ctx.fillText(val, cx+Math.cos(ang)*(r-30)-12, cy- Math.sin(ang)*(r-30)+4);
+    if (w.opts.scale==='auto'){
+      const vals=(w.opts.needles||[]).map(sel=>readSelection(sel));
+      lo=Math.min(...vals,0); hi=Math.max(...vals,1);
+      if(lo===hi){ lo-=1; hi+=1; }
     }
-    legend.innerHTML='';
-    (w.opts.needles||[]).forEach((s,si)=>{
-      const v=readSelection(s), frac=clamp((v-lo)/(hi-lo),0,1), ang=Math.PI-frac*Math.PI;
-      ctx.strokeStyle=colorFor(si); ctx.lineWidth=3; ctx.beginPath();
-      ctx.moveTo(cx,cy);
-      ctx.lineTo(cx+Math.cos(ang)*(r-18), cy- Math.sin(ang)*(r-18)); // NOTE the minus to draw upward
+    const span = (hi===lo)?1:(hi-lo);
+
+    // geometry
+    const cx=W/2;
+    const cy=H - 8; // sit near bottom
+    let rOuter = Math.min(W, H*2)/2 - 12; // padding
+    if (!Number.isFinite(rOuter) || rOuter < 8) { requestAnimationFrame(draw); return; }
+
+    let band = Math.max(6, Math.round(rOuter * 0.18));
+    if (band >= rOuter - 2) band = Math.max(6, Math.floor((rOuter - 2) * 0.6));
+    let rInner = rOuter - band;
+    if (rInner < 2) rInner = 2;
+
+    // background rings / grid
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.beginPath(); if (safeArc(ctx, cx, cy, rOuter, Math.PI, 0)) ctx.stroke();
+    ctx.beginPath(); if (safeArc(ctx, cx, cy, rInner, Math.PI, 0)) ctx.stroke();
+
+    // secondary rings
+    ctx.strokeStyle = (getComputedStyle(document.documentElement).getPropertyValue('--grid2')||'#1e2235').trim();
+    for(let t=1;t<=4;t++){
+      const rr=rOuter - t*8;
+      if (rr <= 2) break;
+      ctx.beginPath(); if (safeArc(ctx, cx, cy, rr, Math.PI, 0)) ctx.stroke();
+    }
+
+    // ticks + labels (upper semicircle; canvas Y is downward, so subtract sin)
+    ctx.fillStyle='#a8b3cf'; ctx.font='12px system-ui';
+    ctx.strokeStyle='#3b425e';
+    const tickCount=10;
+    const tickLen=Math.max(3, Math.min(16, Math.floor(rOuter * 0.12)));
+    for(let i=0;i<=tickCount;i++){
+      const t = i / tickCount;
+      const ang = Math.PI + (0 - Math.PI)*t; // map 0..1 -> π..0 (upper semicircle)
+      const cos=Math.cos(ang), sin=Math.sin(ang);
+      const r0 = Math.max(1, rInner - 2);
+      const r1 = Math.max(1, r0 - tickLen);
+      ctx.beginPath();
+      ctx.moveTo(cx + r0*cos, cy - r0*sin);
+      ctx.lineTo(cx + r1*cos, cy - r1*sin);
       ctx.stroke();
+
+      const val=(lo + t*span).toFixed(2);
+      ctx.textAlign='center';
+      ctx.fillText(val, cx + (rInner - 30)*cos, cy - (rInner - 30)*sin + 4);
+    }
+
+    // title
+    if (w.opts.title){
+      ctx.fillStyle='rgba(255,255,255,0.9)';
+      ctx.font='12px system-ui, sans-serif';
+      ctx.textAlign='center';
+      ctx.fillText(w.opts.title, cx, 14);
+    }
+
+    // legend + needles
+    legend.innerHTML='';
+    const needles = Array.isArray(w.opts.needles) ? w.opts.needles : [];
+    ctx.lineWidth=3;
+    needles.forEach((s,si)=>{
+      const v = readSelection(s);
+      const frac = clamp((v - lo)/span, 0, 1);
+      const ang = Math.PI + (0 - Math.PI) * frac;
+      const nx = Math.cos(ang), ny = Math.sin(ang);
+      ctx.strokeStyle=colorFor(si);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + (rInner + band*0.9)*nx, cy - (rInner + band*0.9)*ny);
+      ctx.stroke();
+
       const lab = s.name && s.name.length ? s.name : labelFor(s);
-      legend.append(el('div',{className:'item'},[el('span',{className:'swatch', style:`background:${colorFor(si)}`},''), `${lab}: ${v.toFixed(3)}`]));
+      legend.append(el('div',{className:'item'},[
+        el('span',{className:'swatch', style:`background:${colorFor(si)}`},''), `${lab}: ${Number.isFinite(v)?v.toFixed(3):'—'}`
+      ]));
     });
+
+    ctx.restore();
     requestAnimationFrame(draw);
-  } draw();
+  }
+  draw();
 }
 
-// bars
+/* -------------------------------- bars ---------------------------------- */
 function mountBars(w, body){
-  const canvas=el('canvas'); body.append(canvas); const ctx=canvas.getContext('2d');
+  const canvas=el('canvas'); body.append(canvas);
+  const ctx=canvas.getContext('2d');
+
   function draw(){
-    const W=canvas.clientWidth,H=canvas.clientHeight; canvas.width=W; canvas.height=H; ctx.clearRect(0,0,W,H);
-    const N=Math.max(1,(w.opts.series||[]).length), barW=Math.max(10,(W-40)/N-10);
+    const W=canvas.clientWidth, H=canvas.clientHeight;
+    canvas.width=W; canvas.height=H;
+    ctx.clearRect(0,0,W,H);
+
+    const plotL=30, plotR=W-10, plotT=10, plotB=H-30;
+    ctx.strokeStyle='#3b425e'; ctx.lineWidth=1;
+    ctx.strokeRect(plotL,plotT,plotR-plotL,plotB-plotT);
+
     let lo=w.opts.min, hi=w.opts.max;
-    if (w.opts.scale==='auto'){ const vals=(w.opts.series||[]).map(sel=>readSelection(sel)); lo=Math.min(...vals,0); hi=Math.max(...vals,1); if(lo===hi){lo-=1;hi+=1;} }
-    ctx.strokeStyle='#3b425e'; ctx.lineWidth=1; ctx.strokeRect(30,10,W-50,H-30);
+    if (w.opts.scale==='auto'){
+      const vals=(w.opts.series||[]).map(sel=>readSelection(sel));
+      lo=Math.min(...vals,0); hi=Math.max(...vals,1); if(lo===hi){ lo-=1; hi+=1; }
+    }
+    const N=Math.max(1,(w.opts.series||[]).length);
+    const barW=Math.max(10,(plotR-plotL)/N - 10);
+
+    // Y grid
+    ctx.strokeStyle=(getComputedStyle(document.documentElement).getPropertyValue('--grid')||'#2a2f44').trim();
+    ctx.lineWidth=1;
+    for(let i=0;i<=5;i++){
+      const y=plotB - (i/5)*(plotB-plotT);
+      ctx.beginPath(); ctx.moveTo(plotL,y); ctx.lineTo(plotR,y); ctx.stroke();
+    }
+    // Y labels (use local plot rect)
+    const left = plotL, right = plotR, top = plotT, bottom = plotB;
+    const plotW = right - left, plotH = bottom - top;
+    const ny = 5;
+
+    ctx.fillStyle = '#888';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i <= ny; i++) {
+      const y = top + i * (plotH / ny);
+      const val = (hi - (hi - lo) * i / ny).toFixed(2);
+      ctx.fillText(val, left - 6, y);
+    }
+
+
     (w.opts.series||[]).forEach((s,si)=>{
-      const v=readSelection(s), frac=clamp((v-lo)/(hi-lo),0,1), x=30+si*(barW+10)+10, y=H-30-frac*(H-40);
-      ctx.fillStyle=colorFor(si); ctx.fillRect(x,y,barW,(H-30)-y);
+      const v=readSelection(s);
+      const frac=clamp((v-lo)/((hi===lo)?1:(hi-lo)), 0, 1);
+      const x=plotL + si*(barW+10) + 10;
+      const y=plotB - frac*(plotB-plotT);
+      ctx.fillStyle=colorFor(si);
+      ctx.fillRect(x,y,barW,(plotB)-y);
       const lab = s.name && s.name.length ? s.name : labelFor(s);
       ctx.fillStyle='#a8b3cf'; ctx.font='12px system-ui'; ctx.fillText(lab, x, H-12);
     });
+
     requestAnimationFrame(draw);
-  } draw();
+  }
+  draw();
 }
 
-// DO
+/* -------------------------------- DO ------------------------------------ */
 function logicalActive(bit,activeHigh){ return activeHigh ? !!bit : !bit; }
+
 function mountDOButton(w, body){
   const b=el('button',{className:'do-btn default'}, w.opts.title||'DO');
   body.append(b);
 
+  let actTimer=null;
+  const clearActTimer=()=>{ if (actTimer){ clearTimeout(actTimer); actTimer=null; } };
+
+  const setRaw = async(bit)=>{
+    try{
+      await fetch('/api/do/set',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({index:w.opts.doIndex, state:!!bit, active_high:!!w.opts.activeHigh})
+      });
+    }catch(e){ console.warn('DO set failed', e); }
+  };
+
+  let buzzing=false;
   const startBuzz = async()=>{
-    try{ await fetch('/api/do/buzz/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:w.opts.doIndex,hz:w.opts.buzzHz||2,active_high:w.opts.activeHigh})}); b.dataset.buzz='1'; }catch(e){ console.warn('Buzz start failed', e); }
+    if (buzzing) return;
+    buzzing=true;
+    try{
+      await fetch('/api/do/buzz/start',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({index:w.opts.doIndex, hz:w.opts.buzzHz||2, active_high:w.opts.activeHigh})
+      });
+      b.dataset.buzz='1';
+    }catch(e){ console.warn('Buzz start failed', e); }
   };
+
   const stopBuzz = async()=>{
-    try{ await fetch('/api/do/buzz/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:w.opts.doIndex})}); b.dataset.buzz='0'; }catch(e){ console.warn('Buzz stop failed', e); }
+      try{
+        await fetch('/api/do/buzz/stop', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ index: w.opts.doIndex })
+        });
+      }catch(e){ console.warn('Buzz stop failed', e); }
+      buzzing = false;
+      b.dataset.buzz = '0';
   };
 
-  const setMomentary = async(stateBit)=>{
-    try{ await fetch('/api/do/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:w.opts.doIndex,state:!!stateBit,active_high:!!w.opts.activeHigh})}); }catch(e){ console.warn('DO set failed', e); }
-  };
 
-  // Toggle clicks only affect 'toggle' mode; buzz uses press+release
-  b.addEventListener('click', ()=>{
+  // Toggle with optional actuationTime (auto-off)
+  b.addEventListener('click', async ()=>{
     if(!connected) return;
-    if(w.opts.mode==='toggle'){
-      const bit=state.do[w.opts.doIndex]|0; const want=!bit;
-      fetch('/api/do/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:w.opts.doIndex,state:!!want,active_high:!!w.opts.activeHigh})}).catch(()=>{});
+    if(w.opts.mode!=='toggle') return;
+    clearActTimer();
+    const bit=state.do[w.opts.doIndex]|0;     // current RAW bit
+    const want=!bit;                          // flip
+    await setRaw(want);
+    const ms = Math.max(0, (w.opts.actuationTime||0)*1000);
+    if (ms>0){
+      const original=bit;                     // restore original raw state after pulse
+      actTimer=setTimeout(()=>{ setRaw(original); }, ms);
     }
   });
 
-  const down = ()=>{
+  // Momentary & Buzz via pointer events
+  const onDown = ()=>{
     if(!connected) return;
-    if(w.opts.mode==='momentary'){ setMomentary(true); }
-    if(w.opts.mode==='buzz'){ startBuzz(); }
+    if(w.opts.mode==='momentary'){ clearActTimer(); setRaw(1); }
+    if(w.opts.mode==='buzz'){ stopBuzz().finally(startBuzz); }
   };
-  const up = ()=>{
+  const onUp = ()=>{
     if(!connected) return;
-    if(w.opts.mode==='momentary'){ setMomentary(false); }
-    if(w.opts.mode==='buzz'){ stopBuzz(); }
+    if(w.opts.mode==='momentary'){ setRaw(0); }
+    if(w.opts.mode==='buzz'){
+      // Try very hard to stop: stop, force raw off, then stop again after a short delay
+      stopBuzz().finally(()=>{
+        setRaw(0).finally(()=>{
+          setTimeout(()=>{ stopBuzz(); }, 150);
+        });
+      });
+    }
   };
 
-  b.addEventListener('mousedown', down);
-  b.addEventListener('mouseup', up);
-  window.addEventListener('mouseup', up);
-  b.addEventListener('mouseleave', up);
-  b.addEventListener('touchstart', (e)=>{ e.preventDefault(); down(); }, {passive:false});
-  b.addEventListener('touchend', (e)=>{ e.preventDefault(); up(); }, {passive:false});
+  b.addEventListener('pointerdown', onDown);
+  b.addEventListener('pointerup', onUp);
+  b.addEventListener('pointerleave', onUp);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('blur', onUp);
+  document.addEventListener('visibilitychange', ()=>{ if(document.hidden) onUp(); });
+  // extra safety: stop buzz if we ever disconnect
+  window.addEventListener('beforeunload', ()=>{ if (buzzing) { navigator.sendBeacon && navigator.sendBeacon('/api/do/buzz/stop', JSON.stringify({index:w.opts.doIndex})); } });
 
   updateDOButtons();
 }
+
 function updateDOButtons(){
   document.querySelectorAll('.do-btn').forEach(b=>{
     if(!connected||!hwReady){ b.className='do-btn default'; return; }
-    const id=b.closest('.widget').id.slice(2); const page=state.pages[activePageIndex]; const w=page.widgets.find(x=>x.id===id);
+    const id=b.closest('.widget').id.slice(2);
+    const page=state.pages[activePageIndex];
+    const w=page.widgets.find(x=>x.id===id);
     if(!w){ b.className='do-btn default'; return; }
-    const bit=state.do[w.opts.doIndex]|0; const active=logicalActive(bit,!!w.opts.activeHigh); b.className='do-btn '+(active?'active':'inactive');
-    // Also reflect current title
+    const bit=state.do[w.opts.doIndex]|0;
+    const active=logicalActive(bit, !!w.opts.activeHigh);
+    b.className='do-btn '+(active?'active':'inactive');
     b.textContent = w.opts.title || 'DO';
   });
 }
 
-// PID
+/* -------------------------------- PID ----------------------------------- */
 function mountPIDPanel(w, body){
   const line=el('div',{className:'small', id:'pid_'+w.id}, 'pv=—, err=—, out=—');
   body.append(line);
@@ -321,65 +780,91 @@ function mountPIDPanel(w, body){
   if (w.opts.showControls){
     const ctr=el('div',{className:'compact'});
     const tbl=el('table',{className:'form'}); const tb=el('tbody');
-    const row = (label, input)=>{ const tr=el('tr'); tr.append(el('th',{},label), el('td',{},input)); tb.append(tr); };
-    const L = {enabled: false,name:'',kind:'analog',src:'ai',ai_ch:0,out_ch:0,target:0,kp:0,ki:0,kd:0,out_min:0,out_max:1,err_min:-1,err_max:1,i_min:-1,i_max:1};
-    // Load current loop from server
+    const row=(label,input)=>{ const tr=el('tr'); tr.append(el('th',{},label), el('td',{},input)); tb.append(tr); };
+    const L={enabled:false,name:'',kind:'analog',src:'ai',ai_ch:0,out_ch:0,target:0,kp:0,ki:0,kd:0,out_min:0,out_max:1,err_min:-1,err_max:1,i_min:-1,i_max:1};
+
     fetch('/api/pid').then(r=>r.json()).then(pid=>{
       const idx=w.opts.loopIndex|0; Object.assign(L, pid.loops?.[idx]||{});
       const selKind=selectEnum(['analog','digital','tc','calc'], L.kind||'analog', v=>L.kind=v);
-      const selSrc=selectEnum(['ai','tc','calc'], L.src||'ai', v=>L.src=v);
+      const selSrc =selectEnum(['ai','tc','calc'], L.src ||'ai',    v=>L.src=v);
       row('enabled', chk(L,'enabled'));
       row('name', txt(L,'name'));
       row('kind', selKind);
-      row('src', selSrc);
-      row('ai_ch', num(L,'ai_ch',1));
+      row('src',  selSrc);
+      row('ai_ch',  num(L,'ai_ch',1));
       row('out_ch', num(L,'out_ch',1));
       row('target', num(L,'target',0.0001));
-      row('kp', num(L,'kp',0.0001));
-      row('ki', num(L,'ki',0.0001));
-      row('kd', num(L,'kd',0.0001));
-      row('out_min', num(L,'out_min',0.0001));
-      row('out_max', num(L,'out_max',0.0001));
-      row('err_min', num(L,'err_min',0.0001));
-      row('err_max', num(L,'err_max',0.0001));
-      row('i_min', num(L,'i_min',0.0001));
-      row('i_max', num(L,'i_max',0.0001));
+      row('kp',     num(L,'kp',0.0001));
+      row('ki',     num(L,'ki',0.0001));
+      row('kd',     num(L,'kd',0.0001));
+      row('out_min',num(L,'out_min',0.0001));
+      row('out_max',num(L,'out_max',0.0001));
+      row('err_min',num(L,'err_min',0.0001));
+      row('err_max',num(L,'err_max',0.0001));
+      row('i_min',  num(L,'i_min',0.0001));
+      row('i_max',  num(L,'i_max',0.0001));
       tbl.append(tb);
-      const save=el('button',{className:'btn',onclick:async()=>{ const pid2=await (await fetch('/api/pid')).json(); pid2.loops = pid2.loops||[]; pid2.loops[w.opts.loopIndex|0] = L; await fetch('/api/pid',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(pid2)}); }}, 'Apply');
+
+      const save=el('button',{className:'btn',onclick:async()=>{
+        const pid2=await (await fetch('/api/pid')).json();
+        pid2.loops = pid2.loops||[];
+        pid2.loops[w.opts.loopIndex|0] = L;
+        await fetch('/api/pid',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(pid2)});
+      }}, 'Apply');
+
       ctr.append(tbl, el('div',{style:'margin-top:6px'}, save));
     });
+
     body.append(ctr);
   }
 
-  (function update(){ const loop=state.pid[w.opts.loopIndex]||null; const p=$('#pid_'+w.id); if(loop&&p){ p.textContent=`pv=${(loop.pv??0).toFixed(3)}, err=${(loop.err??0).toFixed(3)}, out=${(loop.out??0).toFixed(3)}`; } requestAnimationFrame(update); })();
+  (function update(){
+    const loop=state.pid[w.opts.loopIndex]||null;
+    const p=$('#pid_'+w.id);
+    if(loop&&p){ p.textContent=`pv=${(loop.pv??0).toFixed(3)}, err=${(loop.err??0).toFixed(3)}, out=${(loop.out??0).toFixed(3)}`; }
+    requestAnimationFrame(update);
+  })();
 }
+
 function selectEnum(options, value, onChange){
-  const s=el('select',{}); options.forEach(opt=>s.append(el('option',{value:opt},opt))); s.value=value; s.onchange=()=>onChange(s.value); return s;
+  const s=el('select',{}); options.forEach(opt=>s.append(el('option',{value:opt},opt)));
+  s.value=value; s.onchange=()=>onChange(s.value); return s;
 }
 function txt(o,k){ const i=el('input',{type:'text',value:o[k]??''}); i.oninput=()=>o[k]=i.value; return i; }
 function num(o,k,step){ const i=el('input',{type:'number',step:step??'any',value:o[k]??0}); i.oninput=()=>o[k]=parseFloat(i.value)||0; return i; }
 function chk(o,k){ const i=el('input',{type:'checkbox',checked:!!o[k]}); i.onchange=()=>o[k]=!!i.checked; return i; }
 
-// AO slider
+/* -------------------------------- AO ------------------------------------ */
 function mountAOSlider(w, body){
   const step=w.opts.step ?? 0.0025;
   const cur=el('input',{type:'number', min:w.opts.min, max:w.opts.max, step:step, value:state.ao[w.opts.aoIndex]||0, style:'width:90px'});
-  const rng=el('input',{type:'range', min:w.opts.min, max:w.opts.max, step:step, value:state.ao[w.opts.aoIndex]||0, style:'width:100%'});
-  const send=async(v)=>{ try{ await fetch('/api/ao/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:w.opts.aoIndex, volts:parseFloat(v)})}); }catch(e){ console.warn('AO set failed', e); } };
+  const rng=el('input',{type:'range',  min:w.opts.min, max:w.opts.max, step:step, value:state.ao[w.opts.aoIndex]||0, style:'width:100%'});
+  const send=async(v)=>{
+    try{
+      await fetch('/api/ao/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:w.opts.aoIndex, volts:parseFloat(v)})});
+    }catch(e){ console.warn('AO set failed', e); }
+  };
   rng.oninput=()=>{ cur.value=rng.value; if (w.opts.live) send(rng.value); };
   cur.onchange=()=>{ rng.value=cur.value; send(cur.value); };
   body.append(el('div',{className:'row'},[rng,cur]));
 }
 
-// tick + helpers
+/* ------------------------ tick / read / drag ---------------------------- */
 function onTick(){ updateChartBuffers(); updateDOButtons(); }
-function readSelection(sel){ if(!sel) return 0;
-  switch(sel.kind){ case 'ai': return state.ai[sel.index|0]??0; case 'ao': return state.ao[sel.index|0]??0; case 'do': return (state.do[sel.index|0]?1:0); case 'tc': return state.tc[sel.index|0]??0; }
+
+function readSelection(sel){
+  if(!sel) return 0;
+  switch(sel.kind){
+    case 'ai': return state.ai[sel.index|0]??0;
+    case 'ao': return state.ao[sel.index|0]??0;
+    case 'do': return (state.do[sel.index|0]?1:0);
+    case 'tc': return state.tc[sel.index|0]??0;
+  }
   return 0;
 }
 
 // drag/resize — block drag when interacting with inputs
-function makeDragResize(node,w, header, handle){
+function makeDragResize(node, w, header, handle){
   let dragging=false,resizing=false,sx=0,sy=0,ox=0,oy=0,ow=0,oh=0;
   header.addEventListener('mousedown', (e)=>{
     const tag=(e.target.tagName||'').toUpperCase();
@@ -394,7 +879,65 @@ function makeDragResize(node,w, header, handle){
   window.addEventListener('mouseup',()=>{ dragging=false; resizing=false; });
 }
 
-// modal/editors
+function normalizeLayoutPages(pages){
+  const norm = (w) => {
+    w.opts = w.opts || {};
+    switch (w.type) {
+      case 'chart':
+        w.opts.title      = w.opts.title ?? 'Chart';
+        w.opts.series     = Array.isArray(w.opts.series) ? w.opts.series : [];
+        w.opts.span       = Number.isFinite(w.opts.span) ? w.opts.span : 10;
+        w.opts.scale      = w.opts.scale ?? 'auto';
+        w.opts.min        = Number.isFinite(w.opts.min) ? w.opts.min : 0;
+        w.opts.max        = Number.isFinite(w.opts.max) ? w.opts.max : 10;
+        w.opts.filterHz   = Number.isFinite(w.opts.filterHz) ? w.opts.filterHz : 0;
+        w.opts.cursorMode = w.opts.cursorMode ?? 'follow';
+        break;
+      case 'gauge':
+        w.opts.title  = w.opts.title ?? 'Gauge';
+        w.opts.needles= Array.isArray(w.opts.needles) ? w.opts.needles : [];
+        w.opts.scale  = w.opts.scale ?? 'manual';
+        w.opts.min    = Number.isFinite(w.opts.min) ? w.opts.min : 0;
+        w.opts.max    = Number.isFinite(w.opts.max) ? w.opts.max : 10;
+        break;
+      case 'bars':
+        w.opts.title  = w.opts.title ?? 'Bars';
+        w.opts.scale  = w.opts.scale ?? 'auto';
+        w.opts.min    = Number.isFinite(w.opts.min) ? w.opts.min : 0;
+        w.opts.max    = Number.isFinite(w.opts.max) ? w.opts.max : 10;
+        break;
+      case 'dobutton':
+        w.opts.title     = w.opts.title ?? 'DO';
+        w.opts.doIndex   = Number.isInteger(w.opts.doIndex) ? w.opts.doIndex : 0;
+        w.opts.activeHigh= (w.opts.activeHigh !== false);
+        w.opts.mode      = w.opts.mode ?? 'momentary'; // 'momentary' | 'toggle' | 'buzz'
+        w.opts.actTime   = Number.isFinite(w.opts.actTime) ? w.opts.actTime : 0;
+        break;
+      case 'aoslider':
+        w.opts.title   = w.opts.title ?? 'AO';
+        w.opts.aoIndex = Number.isInteger(w.opts.aoIndex) ? w.opts.aoIndex : 0;
+        w.opts.minV    = Number.isFinite(w.opts.minV) ? w.opts.minV : 0;
+        w.opts.maxV    = Number.isFinite(w.opts.maxV) ? w.opts.maxV : 10;
+        break;
+      case 'pidpanel':
+        w.opts.title = w.opts.title ?? 'PID';
+        // leave other PID fields as-is; panel reads current config
+        break;
+    }
+    // ensure position/size exist so renderPage doesn’t choke
+    w.x = Number.isFinite(w.x) ? w.x : 40;
+    w.y = Number.isFinite(w.y) ? w.y : 40;
+    w.w = Number.isFinite(w.w) ? w.w : 460;
+    w.h = Number.isFinite(w.h) ? w.h : 280;
+    return w;
+  };
+  return pages.map(p => ({
+    name: p.name || '',
+    widgets: Array.isArray(p.widgets) ? p.widgets.map(norm) : []
+  }));
+}
+
+/* -------------------------- modal / editors ----------------------------- */
 function showModal(content, onClose){
   const m=$('#modal'); m.classList.remove('hidden'); m.innerHTML='';
   const panel=el('div',{className:'panel'});
@@ -407,10 +950,10 @@ function openJsonEditor(title,url){
     const ta=el('textarea',{style:'width:100%;height:60vh'}, JSON.stringify(obj,null,2));
     const save=el('button',{className:'btn',onclick:async()=>{
       try{ await fetch(url,{method:'PUT',headers:{'Content-Type':'application/json'},body:ta.value}); alert('Saved'); }
-      catch(e){ alert('Save failed: '+e.message);} }},'Save');
+      catch(e){ alert('Save failed: '+e.message); }
+    }},'Save');
     showModal(el('div',{},[el('h2',{},title), ta, el('div',{style:'margin-top:8px'},save)]), ()=>{ renderPage(); });
-  }).catch(_e=>{
-    // Fallback editor if /api/script not present
+  }).catch(()=>{
     const ta=el('textarea',{style:'width:100%;height:60vh'}, '// Paste your script JSON here');
     const save=el('button',{className:'btn',onclick:()=>alert('No /api/script endpoint; server needs implementing.')},'Save');
     showModal(el('div',{},[el('h2',{},title), ta, el('div',{style:'margin-top:8px'},save)]));
@@ -418,62 +961,57 @@ function openJsonEditor(title,url){
 }
 function openScriptEditor(){ openJsonEditor('Script','/api/script'); }
 
-// structured forms
+/* -------- structured config / pid forms (resizable modal) --------------- */
 async function openConfigForm(){
   const cfg=await (await fetch('/api/config')).json();
-  configCache = cfg; // refresh cache so labels pick up
-  const root=el('div',{});
+  configCache = cfg;
+  const root=el('div',{}); // panel gets CSS `resize: both`
 
   const boards=fieldset('Boards', tableForm([
-    ['E-1608 boardNum', inputNum(cfg.board1608,'boardNum',0)],
+    ['E-1608 boardNum',     inputNum(cfg.board1608,'boardNum',0)],
     ['E-1608 sampleRateHz', inputNum(cfg.board1608,'sampleRateHz',1)],
-    ['E-1608 blockSize', inputNum(cfg.board1608,'blockSize',1)],
-    ['E-TC boardNum', inputNum(cfg.boardetc,'boardNum',0)],
-    ['E-TC sampleRateHz', inputNum(cfg.boardetc,'sampleRateHz',1)],
-    ['E-TC blockSize', inputNum(cfg.boardetc,'blockSize',1)]
+    ['E-1608 blockSize',    inputNum(cfg.board1608,'blockSize',1)],
+    ['E-TC boardNum',       inputNum(cfg.boardetc,'boardNum',0)],
+    ['E-TC sampleRateHz',   inputNum(cfg.boardetc,'sampleRateHz',1)],
+    ['E-TC blockSize',      inputNum(cfg.boardetc,'blockSize',1)]
   ]));
 
   const analogRows=(cfg.analogs||[]).map((a,i)=>[
-    `AI${i} name`,inputText(a,'name'),
-    `slope`,inputNum(a,'slope',0.000001),
-    `offset`,inputNum(a,'offset',0.000001),
-    `cutoffHz`,inputNum(a,'cutoffHz',0.1),
-    `units`,inputText(a,'units'),
-    `include`,inputChk(a,'include')
+    `AI${i} name`, inputText(a,'name'),
+    `slope`,      inputNum(a,'slope',0.000001),
+    `offset`,     inputNum(a,'offset',0.000001),
+    `cutoffHz`,   inputNum(a,'cutoffHz',0.1),
+    `units`,      inputText(a,'units'),
+    `include`,    inputChk(a,'include')
   ]);
   const analogs=fieldset('Analogs (server scales Y = m·X + b)', tableFormRows(analogRows));
 
-  // Normalize legacy momentary->mode
-  (cfg.digitalOutputs||[]).forEach(d=>{
-    if (!d.mode){
-      d.mode = d.momentary ? 'momentary' : 'toggle';
-    }
-  });
+  (cfg.digitalOutputs||[]).forEach(d=>{ if(!d.mode){ d.mode = d.momentary ? 'momentary' : 'toggle'; } });
   const DO_MODES=['toggle','momentary','buzz'];
   const doRows=(cfg.digitalOutputs||[]).map((d,i)=>[
-    `DO${i} name`,inputText(d,'name'),
-    `mode`,selectEnum(DO_MODES,d.mode||'toggle',v=>{ d.mode=v; d.momentary = (v==='momentary'); }),
+    `DO${i} name`, inputText(d,'name'),
+    `mode`,        selectEnum(DO_MODES,d.mode||'toggle',v=>{ d.mode=v; d.momentary = (v==='momentary'); }),
     `normallyOpen`,inputChk(d,'normallyOpen'),
-    `actuationTime`,inputNum(d,'actuationTime',0.1),
-    `include`,inputChk(d,'include')
+    `actuationTime (s, toggle only)`, inputNum(d,'actuationTime',0.1),
+    `include`,     inputChk(d,'include')
   ]);
   const dig=fieldset('Digital Outputs', tableFormRows(doRows));
 
   const aoRows=(cfg.analogOutputs||[]).map((a,i)=>[
-    `AO${i} name`,inputText(a,'name'),
-    `minV`,inputNum(a,'minV',0.001),
-    `maxV`,inputNum(a,'maxV',0.001),
-    `startupV`,inputNum(a,'startupV',0.001),
-    `include`,inputChk(a,'include')
+    `AO${i} name`, inputText(a,'name'),
+    `minV`,        inputNum(a,'minV',0.001),
+    `maxV`,        inputNum(a,'maxV',0.001),
+    `startupV`,    inputNum(a,'startupV',0.001),
+    `include`,     inputChk(a,'include')
   ]);
   const aos=fieldset('Analog Outputs (0–10 V)', tableFormRows(aoRows));
 
   const tcRows=(cfg.thermocouples||[]).map((t,i)=>[
-    `TC${i} include`,inputChk(t,'include'),
-    `ch`,inputNum(t,'ch',1),
-    `name`,inputText(t,'name'),
-    `type`,selectEnum(['K','J','T','E','R','S','B','N','C'], t.type||'K', v=>t.type=v),
-    `offset`,inputNum(t,'offset',0.001)
+    `TC${i} include`, inputChk(t,'include'),
+    `ch`,             inputNum(t,'ch',1),
+    `name`,           inputText(t,'name'),
+    `type`,           selectEnum(['K','J','T','E','R','S','B','N','C'], t.type||'K', v=>t.type=v),
+    `offset`,         inputNum(t,'offset',0.001)
   ]);
   const tcs=fieldset('Thermocouples', tableFormRows(tcRows));
 
@@ -482,51 +1020,99 @@ async function openConfigForm(){
     catch(e){ alert('Save failed: '+e.message); }
   }},'Save');
 
-  showModal(el('div',{},[boards,analogs,dig,aos,tcs, el('div',{style:'margin-top:8px'}, save)]), ()=>{ renderPage(); });
+  root.append(boards,analogs,dig,aos,tcs, el('div',{style:'margin-top:8px'}, save));
+  showModal(root, ()=>{ renderPage(); });
 }
 
 async function openPidForm(){
   const pid=await (await fetch('/api/pid')).json();
   const rows=(pid.loops||[]).map((L,idx)=>[
-    `Loop ${idx} enabled`,inputChk(L,'enabled'),
-    `name`,inputText(L,'name'),
-    `kind`,selectEnum(['analog','digital','tc','calc'], L.kind||'analog', v=>L.kind=v),
-    `src`,selectEnum(['ai','tc','calc'], L.src||'ai', v=>L.src=v),
-    `ai_ch`,inputNum(L,'ai_ch',1),
+    `Loop ${idx} enabled`, inputChk(L,'enabled'),
+    `name`,  inputText(L,'name'),
+    `kind`,  selectEnum(['analog','digital','tc','calc'], L.kind||'analog', v=>L.kind=v),
+    `src`,   selectEnum(['ai','tc','calc'], L.src||'ai', v=>L.src=v),
+    `ai_ch`, inputNum(L,'ai_ch',1),
     `out_ch`,inputNum(L,'out_ch',1),
     `target`,inputNum(L,'target',0.0001),
-    `kp`,inputNum(L,'kp',0.0001),
-    `ki`,inputNum(L,'ki',0.0001),
-    `kd`,inputNum(L,'kd',0.0001),
+    `kp`,    inputNum(L,'kp',0.0001),
+    `ki`,    inputNum(L,'ki',0.0001),
+    `kd`,    inputNum(L,'kd',0.0001),
     `out_min`,inputNum(L,'out_min',0.0001),
     `out_max`,inputNum(L,'out_max',0.0001),
     `err_min`,inputNum(L,'err_min',0.0001),
     `err_max`,inputNum(L,'err_max',0.0001),
-    `i_min`,inputNum(L,'i_min',0.0001),
-    `i_max`,inputNum(L,'i_max',0.0001)
+    `i_min`,  inputNum(L,'i_min',0.0001),
+    `i_max`,  inputNum(L,'i_max',0.0001)
   ]);
   const fs=fieldset('PID Loops', tableFormRows(rows));
-  const root=el('div',{});
-  const save=el('button',{className:'btn',onclick:async()=>{ try{ await fetch('/api/pid',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(pid)}); alert('Saved'); }catch(e){ alert('Save failed: '+e.message);} }},'Save');
+  const save=el('button',{className:'btn',onclick:async()=>{
+    try{ await fetch('/api/pid',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(pid)}); alert('Saved'); }
+    catch(e){ alert('Save failed: '+e.message); }
+  }},'Save');
   showModal(el('div',{},[fs, el('div',{style:'margin-top:8px'}, save)]), ()=>{ renderPage(); });
 }
 
+/* ----------------------------- form bits -------------------------------- */
 function fieldset(title, inner){ const fs=el('fieldset',{}); fs.append(el('legend',{},title), inner); return fs; }
-function tableForm(pairs){ const tbl=el('table',{className:'form'}), tbody=el('tbody'); for(const [label,input] of pairs){ const tr=el('tr'); tr.append(el('th',{},label), el('td',{},input)); tbody.append(tr); } tbl.append(el('thead',{}, el('tr',{},[el('th',{},'Field'), el('th',{},'Value')])), tbody); return tbl; }
-function tableFormRows(rows){ const tbl=el('table',{className:'form'}), tbody=el('tbody'); for(const row of rows){ const tr=el('tr'); for(let i=0;i<row.length;i+=2){ tr.append(el('th',{},row[i]), el('td',{},row[i+1])); } tbody.append(tr);} tbl.append(el('thead',{}, el('tr',{},[el('th',{},'Field'), el('th',{},'Value'), el('th',{},'Field'), el('th',{},'Value'), el('th',{},'Field'), el('th',{},'Value'), el('th',{},'Field'), el('th',{},'Value')])), tbody); return tbl; }
+function tableForm(pairs){
+  const tbl=el('table',{className:'form'}), tbody=el('tbody');
+  for(const [label,input] of pairs){ const tr=el('tr'); tr.append(el('th',{},label), el('td',{},input)); tbody.append(tr); }
+  tbl.append(el('thead',{}, el('tr',{},[el('th',{},'Field'), el('th',{},'Value')])), tbody);
+  return tbl;
+}
+function tableFormRows(rows){
+  const tbl=el('table',{className:'form'}), tbody=el('tbody');
+  for(const row of rows){
+    const tr=el('tr');
+    for(let i=0;i<row.length;i+=2){ tr.append(el('th',{},row[i]), el('td',{},row[i+1])); }
+    tbody.append(tr);
+  }
+  tbl.append(el('thead',{}, el('tr',{},[
+    el('th',{},'Field'), el('th',{},'Value'),
+    el('th',{},'Field'), el('th',{},'Value'),
+    el('th',{},'Field'), el('th',{},'Value'),
+    el('th',{},'Field'), el('th',{},'Value')
+  ])), tbody);
+  return tbl;
+}
 function inputText(obj,key){ const i=el('input',{type:'text',value:obj[key]??''}); i.oninput=()=>obj[key]=i.value; return i; }
 function inputNum(obj,key,step){ const i=el('input',{type:'number',step:step??'any',value:obj[key]??0}); i.oninput=()=>obj[key]=parseFloat(i.value)||0; return i; }
 function inputChk(obj,key){ const i=el('input',{type:'checkbox',checked:!!obj[key]}); i.onchange=()=>obj[key]=!!i.checked; return i; }
 function selectEnum(options, value, onChange){ const s=el('select',{}); options.forEach(opt=>s.append(el('option',{value:opt},opt))); s.value=value; s.onchange=()=>onChange(s.value); return s; }
-function saveLayoutToFile(){ const blob=new Blob([JSON.stringify({pages:state.pages},null,2)],{type:'application/json'}); const a=el('a',{href:URL.createObjectURL(blob),download:'layout.json'}); a.click(); }
-function loadLayoutFromFile(){ const inp=el('input',{type:'file',accept:'.json'}); inp.onchange=()=>{ const f=inp.files?.[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ try{ const obj=JSON.parse(rd.result); if(!obj.pages||!Array.isArray(obj.pages)) throw new Error('Invalid layout file'); state.pages=obj.pages; refreshPages(); setActivePage(0);}catch(e){ alert('Load failed: '+e.message);} }; rd.readAsText(f); }; inp.click(); }
 
-// Widget settings modal per type
+function saveLayoutToFile(){
+  const blob=new Blob([JSON.stringify({pages:state.pages},null,2)],{type:'application/json'});
+  const a=el('a',{href:URL.createObjectURL(blob),download:'layout.json'}); a.click();
+}
+function loadLayoutFromFile(){
+  const inp=el('input',{type:'file',accept:'.json'});
+  inp.onchange=()=>{
+    const f=inp.files?.[0]; if(!f) return;
+    const rd=new FileReader();
+    rd.onload=()=>{
+      try{
+        const obj=JSON.parse(rd.result);
+        if(!obj.pages||!Array.isArray(obj.pages)) throw new Error('Invalid layout file');
+        state.pages = normalizeLayoutPages(obj.pages);   // <-- ensure defaults exist
+        refreshPages();
+        setActivePage(0);
+      }catch(e){ alert('Load failed: '+e.message); }
+    };
+    rd.readAsText(f);
+  };
+  inp.click();
+}
+
+/* ----------------------- widget settings modal -------------------------- */
 function openWidgetSettings(w){
   const root=el('div',{});
   const titleHeader=el('h3',{}, (w.opts.title||w.type)+' — Settings');
   const titleInput=inputText(w.opts,'title');
-  titleInput.oninput = ()=>{ w.opts.title = titleInput.value; const t=document.querySelector('#w_'+w.id+' header .title'); if(t) t.textContent = w.opts.title || w.type; const b=document.querySelector('#w_'+w.id+' .do-btn'); if(b) b.textContent = w.opts.title || 'DO'; };
+  titleInput.oninput = ()=>{
+    w.opts.title = titleInput.value;
+    const t=document.querySelector('#w_'+w.id+' header .title'); if(t) t.textContent = w.opts.title || w.type;
+    const b=document.querySelector('#w_'+w.id+' .do-btn'); if(b) b.textContent = w.opts.title || 'DO';
+  };
   const nameRow=tableForm([['Title', titleInput]]);
   root.append(el('div',{},[titleHeader]), nameRow, el('hr',{className:'soft'}));
 
@@ -537,8 +1123,10 @@ function openWidgetSettings(w){
       list.innerHTML='';
       items.forEach((s,idx)=>{
         const kindSel=selectEnum(['ai','ao','do','tc'], s.kind||'ai', v=>{ s.kind=v; s.name = s.name || labelFor(s); });
-        const idxInput=el('input',{type:'number',min:0,step:1,value:s.index|0,style:'width:90px'}); idxInput.onchange=()=>{ s.index=parseInt(idxInput.value)||0; s.name = s.name || labelFor(s); };
-        const nameInput=el('input',{type:'text',value:(s.name && s.name.length)? s.name : labelFor(s),placeholder:'label'}); nameInput.oninput=()=>s.name=nameInput.value;
+        const idxInput=el('input',{type:'number',min:0,step:1,value:s.index|0,style:'width:90px'});
+        idxInput.onchange=()=>{ s.index=parseInt(idxInput.value)||0; s.name = s.name || labelFor(s); };
+        const nameInput=el('input',{type:'text',value:(s.name && s.name.length)? s.name : labelFor(s),placeholder:'label'});
+        nameInput.oninput=()=>s.name=nameInput.value;
         const rm=el('span',{className:'icon',onclick:()=>{ items.splice(idx,1); redrawList(); }}, '−');
         list.append(el('div',{className:'row'},[kindSel, idxInput, nameInput, rm]));
       });
@@ -552,10 +1140,9 @@ function openWidgetSettings(w){
     const modeSel=selectEnum(['toggle','momentary','buzz'], w.opts.mode||'toggle', v=>w.opts.mode=v);
     root.append(tableForm([
       ['Title', titleInput],
-      ['Index', inputNum(w.opts,'doIndex',1)],
-      ['Active High', inputChk(w.opts,'activeHigh')],
-      ['Mode', modeSel],
-      ['Buzz Hz', inputNum(w.opts,'buzzHz',0.1)]
+      ['Index', inputNum(w.opts,'doIndex',1)],      ['Active High', inputChk(w.opts,'activeHigh')],
+      ['Mode', modeSel],                             ['Buzz Hz', inputNum(w.opts,'buzzHz',0.1)],
+      ['Actuation Time (s, toggle)', inputNum(w.opts,'actuationTime',0.1)]
     ]));
   }
 
@@ -572,7 +1159,7 @@ function openWidgetSettings(w){
       if(cur){ cur.min=w.opts.min; cur.max=w.opts.max; cur.step=w.opts.step; }
       const hdr=node.querySelector('header .title'); if(hdr) hdr.textContent=w.opts.title||'AO';
     };
-    minI.oninput = ()=>{ w.opts.min=parseFloat(minI.value)||0; applyAOdom(); };
+    minI.oninput = ()=>{ w.opts.min=parseFloat(minI.value)||0;  applyAOdom(); };
     maxI.oninput = ()=>{ w.opts.max=parseFloat(maxI.value)||10; applyAOdom(); };
     stepI.oninput= ()=>{ w.opts.step=parseFloat(stepI.value)||0.0001; applyAOdom(); };
 

@@ -2,7 +2,7 @@
 import asyncio
 from typing import List, Optional
 
-BRIDGE_VERSION = "0.4.0"
+BRIDGE_VERSION = "0.5.0"
 
 # ---------- Try mcculw (E-1608 AI/AO/DO and optional TCs) ----------
 HAVE_MCCULW = False
@@ -84,6 +84,8 @@ class MCCBridge:
         # AO/DO soft mirrors for UI snapshots
         self._do_bits = [0] * 8
         self._ao_vals = [0.0, 0.0]
+        self._do_active_high = [True] * 8
+        self._buzz_tasks = {}
 
         # E-TC handles
         self._etc_uldaq_dev: Optional[DaqDevice] = None
@@ -284,31 +286,38 @@ class MCCBridge:
             except Exception as e:
                 print(f"[MCCBridge] DO ch{index} write failed: {e}")
 
-    async def start_buzz(self, index: int, hz: float, active_high=True):
-        await self.stop_buzz(index)
-        period = 1.0 / max(0.5, float(hz))
+    # --- DO buzz: one cancellable task per channel; STOP always forces OFF ---
+    async def start_buzz(self, index: int, hz: float, active_high: bool = True):
+        self._do_active_high[index] = bool(active_high)
+        await self.stop_buzz(index)  # cancel any prior
+        period = 1.0 / max(0.1, float(hz))
 
-        async def _task():
+        async def _worker():
             on = False
             try:
                 while True:
                     on = not on
-                    self.set_do(index, on, active_high=active_high)
-                    await asyncio.sleep(period / 2)
+                    self.set_do(index, on, active_high=self._do_active_high[index])
+                    await asyncio.sleep(period / 2.0)
             except asyncio.CancelledError:
-                self.set_do(index, False, active_high=active_high)
+                # guarantee OFF on cancel
+                self.set_do(index, False, active_high=self._do_active_high[index])
+                raise
 
-        self._buzz_task = asyncio.create_task(_task())
+        self._buzz_tasks[index] = asyncio.create_task(_worker())
 
     async def stop_buzz(self, index: int):
-        t = getattr(self, "_buzz_task", None)
+        t = self._buzz_tasks.pop(index, None)
         if t:
             t.cancel()
             try:
                 await t
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
-        self.set_do(index, False, active_high=True)
+        # double-ensure OFF in case there was no task
+        self.set_do(index, False, active_high=self._do_active_high[index])
 
     def get_do_snapshot(self):
         return list(self._do_bits)
